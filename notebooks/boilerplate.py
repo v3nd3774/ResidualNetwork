@@ -4,8 +4,15 @@ from functools import reduce
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.optim as optim
+import torch.cuda
 from operator import mul as multiply
-class Net(nn.module):
+from IPython.display import clear_output
+
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+import pdb
+class Net(nn.Module):
     def __init__(self):
         super(Net, self).__init__()
         self.n = 7
@@ -18,19 +25,34 @@ class Net(nn.module):
         self.convs_32 = [*self.convs_32, (
             nn.Conv2d(16, 32, 3, 2, 1), nn.BatchNorm2d(32)
         )]
+        self.convs_32_bn = nn.ModuleList([bn for _, bn in self.convs_32])
+        self.convs_32 = nn.ModuleList([conv for conv, _ in self.convs_32])
+        
         self.convs_16 = [
             (nn.Conv2d(32, 32, 3, padding=1), nn.BatchNorm2d(32)) \
              for _ in range(2 * self.n - 2)]
         self.convs_16 = [*self.convs_16, (
             nn.Conv2d(32, 64, 3, 2, 1), nn.BatchNorm2d(64)
         )]
+        # put into modulelist for cuda functionality
+        self.convs_16_bn = nn.ModuleList([bn for _, bn in self.convs_16])
+        self.convs_16 = nn.ModuleList([conv for conv, _ in self.convs_16])
+        
         self.convs_8 = [(nn.Conv2d(64, 64, 3, padding=1), nn.BatchNorm2d(64)) \
                         for _ in range(2 * self.n - 1)]
         self.convs_8 = [*self.convs_8, (
             nn.Conv2d(64, 128, 3, 2, 1), nn.BatchNorm2d(128)
         )]
+        self.convs_8_bn = nn.ModuleList([bn for _, bn in self.convs_8])
+        self.convs_8 = nn.ModuleList([conv for conv, _ in self.convs_8])
+        
         self.global_avg_pooling_layer = nn.AdaptiveAvgPool2d(1)
         self.fully_connected = nn.Linear(128, 10)
+        self.device = "cpu"
+        self.cuda_enabled = torch.cuda.is_available()
+        if self.cuda_enabled:
+            self.device = "cuda:0"
+            self.cuda()
     def num_flat_features(self, x):
         return reduce(multiply, x.size()[1:], 1)
     def tail_end_of_network(self, x):
@@ -39,18 +61,19 @@ class Net(nn.module):
         x = self.fully_connected(x)
         return x
     def forward(self, x):
-        for conv, bn in [*self.convs_32, *self.convs_16, *self.convs_8]:
+        for conv, bn in zip([*self.convs_32, *self.convs_16, *self.convs_8],
+                            [*self.convs_32_bn, *self.convs_16_bn, *self.convs_8_bn]):
             x = F.relu(bn(conv(x)))
         return self.tail_end_of_network(x)
 class ResNet(Net):
     def __init__(self):
         super(ResNet, self).__init__()
     def forward(self, x):
-        first_conv, first_bn = self.convs_32[0]
+        first_conv, first_bn = self.convs_32[0], self.convs_32_bn[0]
         x = F.relu(first_bn(first_conv(x)))
-        for idx, (conv, bn) in enumerate([
-            *self.convs_32[1:], *self.convs_16, *self.convs_8
-        ]):
+        for idx, (conv, bn) in enumerate(zip(
+            [*self.convs_32[1:], *self.convs_16, *self.convs_8],
+            [*self.convs_32_bn[1:], *self.convs_16_bn, *self.convs_8_bn])):
             if idx % 2 == 0:
                 identity = x
                 x = F.relu(bn(conv(x)))
@@ -92,11 +115,12 @@ def train_network_optim(dataloader, network, criterion, optimizer, scheduler,
     while processed_batches < batches:
         running_loss = 0.0
         for i, data in enumerate(dataloader, 0):
-            inputs, labels = data
+            inputs, labels = list(map(lambda data: data.to(network.device), data)) \
+                             if network.cuda_enabled else data
             optimizer.zero_grad()
             outputs = network(inputs)
             loss = criterion(outputs, labels)
-            loss.batckward()
+            loss.backward()
             optimizer.step()
             processed_batches += 1
             running_loss += loss.item()
@@ -131,7 +155,7 @@ def evaluate_network_opt(trainloader, testloader, network_class, step_size=20, e
     batches_done = -1
     for num_batches_to_train in range(1, batch_num_target, step_size + 1):
         network.train()
-        batches_done = train_network_optim(trainloader, network, criterion, optimizer, scheduler
+        batches_done = train_network_optim(trainloader, network, criterion, optimizer, scheduler,
                                            num_batches_to_train, batch_num_target, batches_done)
         
         network.eval()
@@ -141,6 +165,8 @@ def evaluate_network_opt(trainloader, testloader, network_class, step_size=20, e
         with torch.no_grad():
             for data in testloader:
                 images, labels = data
+                if network.cuda_enabled:
+                    images = images.to(network.device)
                 network_outputs.append({"output_score": network(images),
                                         "actual_labels": labels})
         
