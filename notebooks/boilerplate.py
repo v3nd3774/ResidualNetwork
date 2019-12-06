@@ -12,6 +12,9 @@ from IPython.display import clear_output
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 import pdb
+
+
+
 class Net(nn.Module):
     def __init__(self):
         super(Net, self).__init__()
