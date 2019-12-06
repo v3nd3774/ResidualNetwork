@@ -126,7 +126,7 @@ def train_network_optim(dataloader, network, criterion, optimizer, scheduler,
             running_loss += loss.item()
             update_progress(float(processed_batches)/batches, acc)
             if processed_batches % math.ceil(batches/4) == math.ceil(batches/4) - 1:
-                acc += "[%d, %5d] loss: %.3f\n" % \
+                acc += "\n[%d, %5d] loss: %.3f\n" % \
                     (epoch + 1, i + 1, running_loss / math.ceil(batches/4))
                 running_loss = 0.0
             if processed_batches > batches:
@@ -167,7 +167,7 @@ def evaluate_network_opt(trainloader, testloader, network_class, step_size=20, e
                 images, labels = data
                 if network.cuda_enabled:
                     images = images.to(network.device)
-                network_outputs.append({"output_score": network(images),
+                network_outputs.append({"output_score": network(images).to("cpu"),
                                         "actual_labels": labels})
         
         y_true = {label: [] for label in range(0,10)}
@@ -183,5 +183,7 @@ def evaluate_network_opt(trainloader, testloader, network_class, step_size=20, e
         for label in range(0, 10):
             fpr, tpr, thresholds = m.roc_curve(y_true[label], y_score[label])
             auc_by_label[label] = m.auc(fpr, tpr)
-        return auc_by_label, network
+        performance_when_varying_input_size[num_batches_to_train] = \
+            auc_by_label
+    return performance_when_varying_input_size, network
             
