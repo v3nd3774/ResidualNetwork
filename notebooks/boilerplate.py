@@ -13,8 +13,116 @@ from IPython.display import clear_output
 device = "cuda" if torch.cuda.is_available() else "cpu"
 import pdb
 
+def k_by_k_conv(f_0, f_1, k=3, stride=1, padding=1, bias=False):
+    opts = {
+        "in_channels": f_0,
+        "out_channels": f_1,
+        "kernel_size": k,
+        "stride": 1,
+        "padding":1,
+        "bias": False
+    }
+    return nn.Conv2d(**opts)
 
+def bn(dims): return nn.BatchNorm2d(dims)
 
+class BasicBlock(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super(BasicBlock, self).__init__()
+        self.in_channels = in_channels,
+        self.out_channels = out_channels
+        self.conv1 = k_by_k_conv(self.in_channels, self.out_channels)
+        self.bn1 = bn(self.out_channels)
+        self.sigma1 = F.relu()
+        self.conv2 = k_by_k_conv(self.out_channels, self.out_channels)
+        self.bn2 = bn(self.out_channels)
+        self.sigma2 = F.relu()
+        self.block = nn.Sequential(self.conv1,
+                                   self.bn1,
+                                   self.sigma1,
+                                   self.conv2,
+                                   self.bn2,
+                                   self.sigma2)
+    def forward(self, t_1):
+        return self.block(t_1))
+    
+class ResNetBasicBlock(BasicBlock):
+    def __init__(self, in_channels, out_channels):
+        super(ResNetBasicBlock, self).__init__()
+        del self.block[-1]
+        self.use_identity = self.in_channels == self.out_channels
+        if not self.use_identity:
+            downsample_opts = {"k":1,
+                               "stride": 2}
+            self.one_by_one_downsample = k_by_k_conv(in_channels, 
+                                                     out_channels, 
+                                                     **downsample_opts)
+    def shortcut(self, t_1, t_5):
+        if self.use_identity:
+            return t_1 + t_5
+        else:
+            return self.one_by_one_downsample(t_1) + t_5
+    def forward(self, t_1):
+        t_5 = self.block(t_1)
+        return self.shortcut(t_1, t_5)
+    
+
+        
+    def num_flat_features(self, x):
+        return reduce(multiply, x.size()[1:], 1)
+    def tail_end_of_network(self, x):
+        x = self.global_avg_pooling_layer(x)
+        x = x.view(-1, self.num_flat_features(x))
+        x = self.fully_connected(x)
+    
+class Network(nn.Module):
+    def __init__(self, block, n=7):
+        super(Network, self).__init__()
+        self.n = n
+        self.sizes = [32, 16, 8]
+        
+        # 2n + 1 layers of 32x32 with 16 filters
+        self.block_channel_sizes = [(3, 16)]
+        for _ in range(2 * n):
+            self.block_channel_sizes.append((16, 16))
+            
+        # 2n layers of 16x16 with 32 filters
+        self.block_channel_sizes.append((16, 32))
+        for _ in range(2 * n - 1):
+            self.block_channel_sizes.append((32, 32))
+            
+        # 2n layers of 8x8 with 64 filters
+        self.block_channel_sizes.append((32, 64))
+        for _ in range(2 * n - 1):
+            self.block_channel_sizes.append((64, 64))
+            
+        # glue all layers together
+        self.layers = nn.Sequential(*[block(*channel_size)
+                                     for channel_size in self.block_channel_sizes])
+                                             
+        # components for tail end of network
+        self.global_avg_pooling_layer = nn.AdaptiveAvgPool2d(1)
+        self.fully_connected = nn.Linear(128, 10)
+        
+        # if gpu is present, use it
+        self.device = "cpu"
+        self.cuda_enabled = torch.cuda.is_available()
+        if self.cuda_enabled:
+            self.device = "cuda:0"
+            self.cuda()
+            
+    def tail(self, x):
+        x = self.global_avg_pooling_layer(x)
+        x = x.view(-1, self.num_flat_features(x))
+        x = self.fully_connected(x)
+        return x
+    
+    def num_flat_features(self, x):
+        return reduce(multiply, x.size()[1:], 1)
+    
+    def forward(self, x):
+        return self.tail(self.layers(x))
+    
 class Net(nn.Module):
     def __init__(self):
         super(Net, self).__init__()
