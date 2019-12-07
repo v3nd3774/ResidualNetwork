@@ -29,14 +29,14 @@ def bn(dims): return nn.BatchNorm2d(dims)
 class BasicBlock(nn.Module):
     def __init__(self, in_channels, out_channels):
         super(BasicBlock, self).__init__()
-        self.in_channels = in_channels,
+        self.in_channels = in_channels
         self.out_channels = out_channels
         self.conv1 = k_by_k_conv(self.in_channels, self.out_channels)
         self.bn1 = bn(self.out_channels)
-        self.sigma1 = F.relu()
+        self.sigma1 = nn.ReLU(inplace=True)
         self.conv2 = k_by_k_conv(self.out_channels, self.out_channels)
         self.bn2 = bn(self.out_channels)
-        self.sigma2 = F.relu()
+        self.sigma2 = nn.ReLU(inplace=True)
         self.block = nn.Sequential(self.conv1,
                                    self.bn1,
                                    self.sigma1,
@@ -44,11 +44,11 @@ class BasicBlock(nn.Module):
                                    self.bn2,
                                    self.sigma2)
     def forward(self, t_1):
-        return self.block(t_1))
+        return self.block(t_1)
     
 class ResNetBasicBlock(BasicBlock):
     def __init__(self, in_channels, out_channels):
-        super(ResNetBasicBlock, self).__init__()
+        super(ResNetBasicBlock, self).__init__(in_channels, out_channels)
         del self.block[-1]
         self.use_identity = self.in_channels == self.out_channels
         if not self.use_identity:
@@ -64,16 +64,7 @@ class ResNetBasicBlock(BasicBlock):
             return self.one_by_one_downsample(t_1) + t_5
     def forward(self, t_1):
         t_5 = self.block(t_1)
-        return self.shortcut(t_1, t_5)
-    
-
-        
-    def num_flat_features(self, x):
-        return reduce(multiply, x.size()[1:], 1)
-    def tail_end_of_network(self, x):
-        x = self.global_avg_pooling_layer(x)
-        x = x.view(-1, self.num_flat_features(x))
-        x = self.fully_connected(x)
+        return self.sigma2(self.shortcut(t_1, t_5))
     
 class Network(nn.Module):
     def __init__(self, block, n=7):
@@ -97,8 +88,8 @@ class Network(nn.Module):
             self.block_channel_sizes.append((64, 64))
             
         # glue all layers together
-        self.layers = nn.Sequential(*[block(*channel_size)
-                                     for channel_size in self.block_channel_sizes])
+        self.layers = nn.Sequential(*[block(channel_in, channel_out)
+                                     for channel_in, channel_out in self.block_channel_sizes])
                                              
         # components for tail end of network
         self.global_avg_pooling_layer = nn.AdaptiveAvgPool2d(1)
@@ -123,77 +114,14 @@ class Network(nn.Module):
     def forward(self, x):
         return self.tail(self.layers(x))
     
-class Net(nn.Module):
+class Net(Network):
     def __init__(self):
-        super(Net, self).__init__()
-        self.n = 7
-        self.convs_32 = [
-            (nn.Conv2d(16, 16, 3, padding=1), nn.BatchNorm2d(16)) \
-             for _ in range(2 * self.n - 2)]
-        self.convs_32 = [(
-            nn.Conv2d(3,16,3,padding=1), nn.BatchNorm2d(16)
-        ),*self.convs_32]
-        self.convs_32 = [*self.convs_32, (
-            nn.Conv2d(16, 32, 3, 2, 1), nn.BatchNorm2d(32)
-        )]
-        self.convs_32_bn = nn.ModuleList([bn for _, bn in self.convs_32])
-        self.convs_32 = nn.ModuleList([conv for conv, _ in self.convs_32])
+        super(Net, self).__init__(BasicBlock)
         
-        self.convs_16 = [
-            (nn.Conv2d(32, 32, 3, padding=1), nn.BatchNorm2d(32)) \
-             for _ in range(2 * self.n - 2)]
-        self.convs_16 = [*self.convs_16, (
-            nn.Conv2d(32, 64, 3, 2, 1), nn.BatchNorm2d(64)
-        )]
-        # put into modulelist for cuda functionality
-        self.convs_16_bn = nn.ModuleList([bn for _, bn in self.convs_16])
-        self.convs_16 = nn.ModuleList([conv for conv, _ in self.convs_16])
-        
-        self.convs_8 = [(nn.Conv2d(64, 64, 3, padding=1), nn.BatchNorm2d(64)) \
-                        for _ in range(2 * self.n - 1)]
-        self.convs_8 = [*self.convs_8, (
-            nn.Conv2d(64, 128, 3, 2, 1), nn.BatchNorm2d(128)
-        )]
-        self.convs_8_bn = nn.ModuleList([bn for _, bn in self.convs_8])
-        self.convs_8 = nn.ModuleList([conv for conv, _ in self.convs_8])
-        
-        self.global_avg_pooling_layer = nn.AdaptiveAvgPool2d(1)
-        self.fully_connected = nn.Linear(128, 10)
-        self.device = "cpu"
-        self.cuda_enabled = torch.cuda.is_available()
-        if self.cuda_enabled:
-            self.device = "cuda:0"
-            self.cuda()
-    def num_flat_features(self, x):
-        return reduce(multiply, x.size()[1:], 1)
-    def tail_end_of_network(self, x):
-        x = self.global_avg_pooling_layer(x)
-        x = x.view(-1, self.num_flat_features(x))
-        x = self.fully_connected(x)
-        return x
-    def forward(self, x):
-        for conv, bn in zip([*self.convs_32, *self.convs_16, *self.convs_8],
-                            [*self.convs_32_bn, *self.convs_16_bn, *self.convs_8_bn]):
-            x = F.relu(bn(conv(x)))
-        return self.tail_end_of_network(x)
-class ResNet(Net):
+class ResNet(Network):
     def __init__(self):
-        super(ResNet, self).__init__()
-    def forward(self, x):
-        first_conv, first_bn = self.convs_32[0], self.convs_32_bn[0]
-        x = F.relu(first_bn(first_conv(x)))
-        for idx, (conv, bn) in enumerate(zip(
-            [*self.convs_32[1:], *self.convs_16, *self.convs_8],
-            [*self.convs_32_bn[1:], *self.convs_16_bn, *self.convs_8_bn])):
-            if idx % 2 == 0:
-                identity = x
-                x = F.relu(bn(conv(x)))
-            else:
-                if bn(conv(x)).shape == identity.shape:
-                    x = F.relu(bn(conv(x) + identity))
-                else:
-                    x = F.relu(bn(conv(x)))
-        return self.tail_end_of_network(x)
+        super(ResNet, self).__init__(ResNetBasicBlock)
+        
 def update_progress(progress, acc):
     bar_length = 20
     if isinstance(progress, int):
@@ -211,11 +139,11 @@ def update_progress(progress, acc):
     print(text)
 import math
 import sklearn.metrics as m
-def train_network_optim(dataloader, network, criterion, optimizer, scheduler,
+def train_network_optim(dataloader, network, criterion, optimizer, scheduler, batch_size,
                         batches=-1, target_num_batches=-1, processed_batches=-1):
     if target_num_batches < 0:
         target_num_batches = math.ceil(
-            len(dataloader.dataset)/dataloader.batch_size)
+            len(dataloader)/batch_size)
     if batches < 0:
         batches = target_num_batches
     if processed_batches < 0:
@@ -225,9 +153,8 @@ def train_network_optim(dataloader, network, criterion, optimizer, scheduler,
     epoch = 0
     while processed_batches < batches:
         running_loss = 0.0
-        for i, data in enumerate(dataloader, 0):
-            inputs, labels = list(map(lambda data: data.to(network.device), data)) \
-                             if network.cuda_enabled else data
+        for i, data in enumerate(random.shuffle(dataloader), 0):
+            inputs, labels = data
             optimizer.zero_grad()
             outputs = network(inputs)
             loss = criterion(outputs, labels)
@@ -247,9 +174,9 @@ def train_network_optim(dataloader, network, criterion, optimizer, scheduler,
     print("Finished Training")
     update_progress(1, acc)
     return processed_batches
-def evaluate_network_opt(trainloader, testloader, network_class, step_size=20, epochs_desired=-1):
+def evaluate_network_opt(trainloader, testloader, network_class, batch_size, step_size=20, epochs_desired=-1):
     batches_in_one_epoch = math.ceil(
-        len(trainloader.dataset)/trainloader.batch_size)
+        len(trainloader)/batch_size)
     if epochs_desired < 0: epochs_desired = 1
     batch_num_target = batches_in_one_epoch * epochs_desired
     performance_when_varying_input_size = {
@@ -266,7 +193,7 @@ def evaluate_network_opt(trainloader, testloader, network_class, step_size=20, e
     batches_done = -1
     for num_batches_to_train in range(1, batch_num_target, step_size + 1):
         network.train()
-        batches_done = train_network_optim(trainloader, network, criterion, optimizer, scheduler,
+        batches_done = train_network_optim(trainloader, network, criterion, optimizer, scheduler, batch_size,
                                            num_batches_to_train, batch_num_target, batches_done)
         
         network.eval()
@@ -276,8 +203,6 @@ def evaluate_network_opt(trainloader, testloader, network_class, step_size=20, e
         with torch.no_grad():
             for data in testloader:
                 images, labels = data
-                if network.cuda_enabled:
-                    images = images.to(network.device)
                 network_outputs.append({"output_score": network(images).to("cpu"),
                                         "actual_labels": labels})
         
