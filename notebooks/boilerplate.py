@@ -8,6 +8,7 @@ import torch.optim as optim
 import torch.cuda
 from operator import mul as multiply
 from IPython.display import clear_output
+import random
 
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
