@@ -19,9 +19,9 @@ def k_by_k_conv(f_0, f_1, k=3, stride=1, padding=1, bias=False):
         "in_channels": f_0,
         "out_channels": f_1,
         "kernel_size": k,
-        "stride": 1,
-        "padding":1,
-        "bias": False
+        "stride": stride,
+        "padding":padding,
+        "bias": bias
     }
     return nn.Conv2d(**opts)
 
@@ -32,7 +32,15 @@ class BasicBlock(nn.Module):
         super(BasicBlock, self).__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
-        self.conv1 = k_by_k_conv(self.in_channels, self.out_channels)
+        self.no_change_in_channels = self.in_channels == self.out_channels
+        self.first_conv_opts = {} # no-op
+        if not self.no_change_in_channels:
+            self.first_conv_opts = {# first-conv downsamples
+                "stride": 2
+            }
+        self.conv1 = k_by_k_conv(self.in_channels, 
+                                 self.out_channels, 
+                                 **self.first_conv_opts)
         self.bn1 = bn(self.out_channels)
         self.sigma1 = nn.ReLU(inplace=True)
         self.conv2 = k_by_k_conv(self.out_channels, self.out_channels)
@@ -51,15 +59,15 @@ class ResNetBasicBlock(BasicBlock):
     def __init__(self, in_channels, out_channels):
         super(ResNetBasicBlock, self).__init__(in_channels, out_channels)
         del self.block[-1]
-        self.use_identity = self.in_channels == self.out_channels
-        if not self.use_identity:
+        if not self.no_change_in_channels:
             downsample_opts = {"k":1,
-                               "stride": 2}
+                               "stride": 2,
+                               "padding":0}
             self.one_by_one_downsample = k_by_k_conv(in_channels, 
                                                      out_channels, 
                                                      **downsample_opts)
     def shortcut(self, t_1, t_5):
-        if self.use_identity:
+        if self.no_change_in_channels:
             return t_1 + t_5
         else:
             return self.one_by_one_downsample(t_1) + t_5
@@ -71,10 +79,9 @@ class Network(nn.Module):
     def __init__(self, block, n=7):
         super(Network, self).__init__()
         self.n = n
-        self.sizes = [32, 16, 8]
         
-        # 2n + 1 layers of 32x32 with 16 filters
-        self.block_channel_sizes = [(3, 16)]
+        # 2n layers of 32x32 with 16 filters, add the 1st 32x32 w/o shortcut connection last
+        self.block_channel_sizes = []
         for _ in range(2 * n):
             self.block_channel_sizes.append((16, 16))
             
@@ -89,12 +96,14 @@ class Network(nn.Module):
             self.block_channel_sizes.append((64, 64))
             
         # glue all layers together
-        self.layers = nn.Sequential(*[block(channel_in, channel_out)
+        self.layers = nn.Sequential(k_by_k_conv(3, 16), # the 1 32x32 to complete 2n + 1 32x32 layers
+                                    *[block(channel_in, channel_out)
                                      for channel_in, channel_out in self.block_channel_sizes])
                                              
         # components for tail end of network
         self.global_avg_pooling_layer = nn.AdaptiveAvgPool2d(1)
-        self.fully_connected = nn.Linear(128, 10)
+        # 64 filters from last set of layers
+        self.fully_connected = nn.Linear(64, 10)
         
         # if gpu is present, use it
         self.device = "cpu"
@@ -143,8 +152,7 @@ import sklearn.metrics as m
 def train_network_optim(dataloader, network, criterion, optimizer, scheduler, batch_size,
                         batches=-1, target_num_batches=-1, processed_batches=-1):
     if target_num_batches < 0:
-        target_num_batches = math.ceil(
-            len(dataloader)/batch_size)
+        target_num_batches = len(dataloader)
     if batches < 0:
         batches = target_num_batches
     if processed_batches < 0:
@@ -152,9 +160,12 @@ def train_network_optim(dataloader, network, criterion, optimizer, scheduler, ba
     acc = f"Evaluating with num_batches/target num of batches:" +\
         f"{batches} / {target_num_batches}"
     epoch = 0
+    batches_in_this_call = batches - processed_batches
+    batches_done_this_call = 0
     while processed_batches < batches:
         running_loss = 0.0
-        for i, data in enumerate(random.shuffle(dataloader), 0):
+        random.shuffle(dataloader)
+        for i, data in enumerate(dataloader, 0):
             inputs, labels = data
             optimizer.zero_grad()
             outputs = network(inputs)
@@ -162,11 +173,12 @@ def train_network_optim(dataloader, network, criterion, optimizer, scheduler, ba
             loss.backward()
             optimizer.step()
             processed_batches += 1
+            batches_done_this_call += 1
             running_loss += loss.item()
             update_progress(float(processed_batches)/batches, acc)
-            if processed_batches % math.ceil(batches/4) == math.ceil(batches/4) - 1:
+            if batches_done_this_call % math.ceil(batches_in_this_call/4) == math.ceil(batches_in_this_call/4) - 1:
                 acc += "\n[%d, %5d] loss: %.3f\n" % \
-                    (epoch + 1, i + 1, running_loss / math.ceil(batches/4))
+                    (epoch + 1, i + 1, running_loss / math.ceil(batches_in_this_call/4))
                 running_loss = 0.0
             if processed_batches > batches:
                 break
@@ -176,13 +188,12 @@ def train_network_optim(dataloader, network, criterion, optimizer, scheduler, ba
     update_progress(1, acc)
     return processed_batches
 def evaluate_network_opt(trainloader, testloader, network_class, batch_size, step_size=20, epochs_desired=-1):
-    batches_in_one_epoch = math.ceil(
-        len(trainloader)/batch_size)
+    batches_in_one_epoch = len(trainloader)
     if epochs_desired < 0: epochs_desired = 1
     batch_num_target = batches_in_one_epoch * epochs_desired
     performance_when_varying_input_size = {
         num_batches_to_train: None for \
-        num_batches_to_train in range(1, batch_num_target, step_size + 1)
+        num_batches_to_train in range(1, batch_num_target + 1, step_size)
     }
     network = network_class()
     criterion = nn.CrossEntropyLoss()
@@ -192,7 +203,7 @@ def evaluate_network_opt(trainloader, testloader, network_class, batch_size, ste
         return 0.1 if epoch_num in [32_000, 48_000] else 1
     scheduler = optim.lr_scheduler.LambdaLR(optimizer, decay_lr)
     batches_done = -1
-    for num_batches_to_train in range(1, batch_num_target, step_size + 1):
+    for num_batches_to_train in range(1, batch_num_target + 1, step_size):
         network.train()
         batches_done = train_network_optim(trainloader, network, criterion, optimizer, scheduler, batch_size,
                                            num_batches_to_train, batch_num_target, batches_done)
@@ -202,10 +213,13 @@ def evaluate_network_opt(trainloader, testloader, network_class, batch_size, ste
         print(f"Evaluating with num_batches/target number of batches:" +\
               f"{num_batches_to_train} / {batch_num_target}")
         with torch.no_grad():
-            for data in testloader:
+            for idx, data in enumerate(testloader):
                 images, labels = data
-                network_outputs.append({"output_score": network(images).to("cpu"),
-                                        "actual_labels": labels})
+                out = network(images).to("cpu")
+                if torch.sum(torch.isnan(out)) != 0:
+                    pdb.set_trace()
+                network_outputs.append({"output_score": out,
+                                        "actual_labels": labels.to("cpu")})
         
         y_true = {label: [] for label in range(0,10)}
         y_score = {label: [] for label in range(0,10)}
