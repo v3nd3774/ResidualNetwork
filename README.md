@@ -10,10 +10,10 @@ The top and bottom axes contain the plain and resnet neural networks.
 The difference between them is that the resnet neural network contains the identity and `1x1` convolution w/ stride `2`
 projection shortcuts described in the paper.
 
-The time taken for training was <time taken here> on:
+The time taken for training was 1.63 Hrs for the plain network and 1.72 Hrs for the residual network on the following hardware:
   
     - Processor: Intel(R) Core(TM) i7-8700K CPU @ 3.70GHz (12 CPUs), ~3.7GHz
     - Memory: 16384MB RAM
     - GPU: GTX 1080
     
-The hardware didn't look fully saturated.
+The hardware didn't look fully saturated during training.
